@@ -1,0 +1,103 @@
+# ============================================================
+# DLM-Scope Extension: SAE-Based Reasoning Steering Config
+# ============================================================
+
+# --- Model Configuration ---
+model:
+  # Primary: DiffuGPT-Medium (355M) — fits comfortably on Colab T4
+  primary:
+    name: "diffusionfamily/diffugpt-m"
+    base_name: "gpt2-medium"  # Used for config loading only
+    d_model: 1024
+    n_layers: 24
+    n_heads: 16
+    vocab_size: 50257
+    max_seq_len: 1024
+    quantize: false  # Not needed for 355M model
+  
+  # Fallback: Dream-7B (4-bit quantized)
+  dream:
+    name: "Dream-org/Dream-v0-Base-7B"
+    d_model: 4096
+    n_layers: 32
+    quantize: true
+    quantize_bits: 4
+
+# --- SAE Configuration ---
+sae:
+  # Following DLM-Scope Table 3 / Appendix B
+  expansion_factor: 4         # d_dict = expansion_factor * d_model
+  k_values: [32, 64, 128]    # TopK sparsity levels to sweep
+  default_k: 64              # Default for experiments
+  
+  # Training
+  learning_rate: 3.0e-4
+  batch_size: 8               # Matches DLM-Scope
+  context_length: 1024        # Reduced from 2048 for memory
+  training_tokens: 5_000_000  # 5M tokens
+  warmup_steps: 500
+  
+  # DLM-specific: which positions to train on
+  position_mode: "mask"       # "mask" (Mask-SAE) or "unmask" (Unmask-SAE)
+  mask_rate_range: [0.1, 0.9] # Range of corruption rates during training
+
+# --- Activation Collection ---
+activations:
+  target_layers: [4, 8, 12, 16, 20]  # 5 layers spanning DiffuGPT depth
+  primary_layer: 16                    # Primary layer for experiments
+  denoising_steps: 30
+  timestep_samples: [0, 7, 14, 21, 29]  # 5 evenly-spaced timesteps
+  batch_size: 4
+  num_problems: 200            # GSM8K problems for contrastive analysis
+  save_to_drive: true
+
+# --- Contrastive Feature Discovery ---
+features:
+  n_problems_discovery: 200   # Problems for feature identification
+  n_problems_eval: 100        # Held-out problems for evaluation
+  significance_alpha: 0.05    # p-value threshold
+  correction: "bonferroni"    # Multiple comparison correction
+  top_n_features: 50          # Number of reasoning features to use
+
+# --- Steering Experiments ---
+steering:
+  # Main experiments
+  alpha_values: [0.5, 1.0, 2.0, 5.0, 10.0]
+  negative_alpha_values: [-1.0, -2.0, -5.0]
+  default_alpha: 2.0
+  token_scope: "all"          # "all" or "update" (masked only)
+  denoising_steps: 30
+  max_new_tokens: 256         # Max tokens to generate
+  
+  # Ablations
+  feature_counts: [10, 25, 50, 100, 200]
+  timestep_ranges:
+    early: [0, 10]
+    middle: [10, 20]
+    late: [20, 30]
+  
+  # Controls
+  n_random_seeds: 3
+  n_random_feature_sets: 5    # For random control
+
+# --- Evaluation ---
+evaluation:
+  gsm8k_split: "test"
+  n_eval_problems: 200
+  answer_extraction: "regex"  # Extract numerical answer
+  perplexity_model: null      # Use same model for perplexity
+
+# --- Visualization ---
+visualization:
+  style: "dark"
+  dpi: 300
+  figsize: [10, 6]
+  color_palette: "viridis"
+  font_family: "serif"
+
+# --- Paths ---
+paths:
+  drive_root: "/content/drive/MyDrive/dlm_steering"
+  checkpoints: "results/checkpoints"
+  figures: "results/figures"
+  tables: "results/tables"
