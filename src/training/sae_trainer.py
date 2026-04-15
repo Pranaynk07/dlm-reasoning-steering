@@ -19,7 +19,10 @@ import json
 import logging
 import time
 
-from ..models.topk_sae import TopKSAE, create_sae_for_model
+try:
+    from src.models.topk_sae import TopKSAE, create_sae_for_model
+except ImportError:
+    from ..models.topk_sae import TopKSAE, create_sae_for_model
 
 logger = logging.getLogger(__name__)
 

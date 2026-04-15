@@ -15,7 +15,7 @@ References:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from typing import Optional, Dict, List, Callable, Tuple
 import numpy as np
 from pathlib import Path
@@ -90,24 +90,29 @@ class DLMWrapper:
         )
     
     def _load_model(self):
-        """Load the DLM model and tokenizer."""
+        """Load the DLM model and tokenizer with robust fallback."""
         logger.info(f"Loading model: {self.model_name}")
         
-        # Load tokenizer from base model
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.base_model_name,
-            cache_dir=self.cache_dir,
-        )
+        # Load tokenizer
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.model_name,
+                cache_dir=self.cache_dir,
+                trust_remote_code=True,
+            )
+        except Exception:
+            logger.info(f"Tokenizer not found for {self.model_name}, using {self.base_model_name}")
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.base_model_name,
+                cache_dir=self.cache_dir,
+            )
+        
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
-        # Load config
-        self.config = AutoConfig.from_pretrained(
-            self.base_model_name,
-            cache_dir=self.cache_dir,
-        )
+        # Load model — try primary, fall back to base
+        model_loaded = False
         
-        # Load model
         if self.quantize_4bit:
             try:
                 from transformers import BitsAndBytesConfig
@@ -123,38 +128,57 @@ class DLMWrapper:
                     cache_dir=self.cache_dir,
                     trust_remote_code=True,
                 )
-            except ImportError:
-                raise ImportError(
-                    "4-bit quantization requires bitsandbytes. "
-                    "Install with: pip install bitsandbytes"
-                )
-        else:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                cache_dir=self.cache_dir,
-                trust_remote_code=True,
-                torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
-            )
-            self.model = self.model.to(self.device)
+                model_loaded = True
+            except Exception as e:
+                logger.warning(f"4-bit loading failed: {e}")
         
+        if not model_loaded:
+            # Try loading the primary model name
+            for name in [self.model_name, self.base_model_name]:
+                try:
+                    logger.info(f"Trying to load: {name}")
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        name,
+                        cache_dir=self.cache_dir,
+                        trust_remote_code=True,
+                        torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
+                    )
+                    self.model = self.model.to(self.device)
+                    self.model_name = name  # Record which model actually loaded
+                    model_loaded = True
+                    logger.info(f"✅ Successfully loaded: {name}")
+                    break
+                except Exception as e:
+                    logger.warning(f"Failed to load {name}: {e}")
+                    continue
+        
+        if not model_loaded:
+            raise RuntimeError(
+                f"Could not load any model. Tried: {self.model_name}, {self.base_model_name}"
+            )
+        
+        # Load config from whichever model loaded
+        self.config = self.model.config
         self.model.eval()
     
     def _get_mask_token_id(self) -> int:
         """
-        Get the mask token ID for this model.
+        Get the mask token ID for diffusion masking.
         
-        DiffuGPT uses the last token in vocabulary as mask.
-        Dream uses a dedicated [MASK] token.
+        Strategy: Use the tokenizer's mask_token if available,
+        otherwise use eos_token_id as a sentinel for masked positions.
+        We clamp generated tokens to avoid this ID in output.
         """
-        # For DiffuGPT: mask token is typically the last token
-        # Check if model has a dedicated mask token
+        # Check for dedicated mask token
         if hasattr(self.tokenizer, 'mask_token_id') and self.tokenizer.mask_token_id is not None:
             return self.tokenizer.mask_token_id
         
-        # DiffuGPT convention: use vocab_size as mask (added token)
-        # The actual mask token id depends on implementation
-        # For DiffuGPT, it's typically vocab_size (50257 for GPT-2)
-        return self.config.vocab_size
+        # Use eos_token_id as mask sentinel (safe — we filter it in decode)
+        if self.tokenizer.eos_token_id is not None:
+            return self.tokenizer.eos_token_id
+        
+        # Last resort: use last vocab token
+        return self.config.vocab_size - 1
     
     def _get_layer_module(self, layer_idx: int):
         """Get the transformer layer module by index."""

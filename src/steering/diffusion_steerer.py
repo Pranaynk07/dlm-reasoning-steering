@@ -18,7 +18,10 @@ import torch.nn.functional as F
 from typing import List, Optional, Dict, Callable
 import logging
 
-from ..models.topk_sae import TopKSAE
+try:
+    from src.models.topk_sae import TopKSAE
+except ImportError:
+    from ..models.topk_sae import TopKSAE
 
 logger = logging.getLogger(__name__)
 
