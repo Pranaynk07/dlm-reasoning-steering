@@ -126,25 +126,27 @@ class DLMWrapper:
             torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
         )
         
+        # DiffuGPT adds 1 extra token (mask token) to GPT-2's vocab (50257 → 50258)
+        # We must resize BEFORE loading DiffuGPT weights so shapes match
+        DIFFUGPT_VOCAB_SIZE = 50258
+        DIFFUGPT_MASK_TOKEN_ID = 50257  # The extra token used for masking
+        
+        self.model.resize_token_embeddings(DIFFUGPT_VOCAB_SIZE)
+        self._mask_token_id = DIFFUGPT_MASK_TOKEN_ID
+        
         # Try to load and remap DiffuGPT weights
         if self.model_name != self.base_model_name:
             try:
                 self._load_diffugpt_weights()
+                logger.info("✅ DiffuGPT weights loaded successfully!")
             except Exception as e:
                 logger.warning(
                     f"Could not load DiffuGPT weights: {e}. "
                     f"Using base GPT-2 Medium weights instead."
                 )
-        
-        # Add [MASK] token for diffusion
-        # Resize embeddings to have one extra token for masking
-        self.tokenizer.add_special_tokens({'additional_special_tokens': ['[MASK]']})
-        self.model.resize_token_embeddings(len(self.tokenizer))
-        self._mask_token_id = self.tokenizer.convert_tokens_to_ids('[MASK]')
-        
-        # Initialize mask embedding to zero (neutral — won't bias predictions)
-        with torch.no_grad():
-            self.model.transformer.wte.weight[self._mask_token_id] = 0.0
+                # Initialize mask embedding to zero if using GPT-2 fallback
+                with torch.no_grad():
+                    self.model.transformer.wte.weight[self._mask_token_id] = 0.0
         
         self.model = self.model.to(self.device)
         self.config = self.model.config
