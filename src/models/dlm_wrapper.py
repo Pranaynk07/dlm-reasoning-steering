@@ -90,10 +90,17 @@ class DLMWrapper:
         )
     
     def _load_model(self):
-        """Load the DLM model and tokenizer with robust fallback."""
+        """
+        Load the DLM model and tokenizer.
+        
+        DiffuGPT stores weights with custom prefixes:
+          - 'denoise_model.*' instead of 'transformer.*'
+          - 'embed_tokens.weight' instead of 'transformer.wte.weight'
+        We handle this by loading into GPT-2 architecture and remapping weights.
+        """
         logger.info(f"Loading model: {self.model_name}")
         
-        # Load tokenizer
+        # --- Load tokenizer ---
         try:
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self.model_name,
@@ -110,75 +117,104 @@ class DLMWrapper:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
-        # Load model — try primary, fall back to base
-        model_loaded = False
+        # --- Load model ---
+        # First, create a clean GPT-2 Medium model (correct architecture)
+        logger.info(f"Creating base model from: {self.base_model_name}")
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.base_model_name,
+            cache_dir=self.cache_dir,
+            torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
+        )
         
-        if self.quantize_4bit:
+        # Try to load and remap DiffuGPT weights
+        if self.model_name != self.base_model_name:
             try:
-                from transformers import BitsAndBytesConfig
-                quant_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=torch.bfloat16,
-                    bnb_4bit_quant_type="nf4",
-                )
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    self.model_name,
-                    quantization_config=quant_config,
-                    device_map="auto",
-                    cache_dir=self.cache_dir,
-                    trust_remote_code=True,
-                )
-                model_loaded = True
+                self._load_diffugpt_weights()
             except Exception as e:
-                logger.warning(f"4-bit loading failed: {e}")
+                logger.warning(
+                    f"Could not load DiffuGPT weights: {e}. "
+                    f"Using base GPT-2 Medium weights instead."
+                )
         
-        if not model_loaded:
-            # Try loading the primary model name
-            for name in [self.model_name, self.base_model_name]:
-                try:
-                    logger.info(f"Trying to load: {name}")
-                    self.model = AutoModelForCausalLM.from_pretrained(
-                        name,
-                        cache_dir=self.cache_dir,
-                        trust_remote_code=True,
-                        torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
-                    )
-                    self.model = self.model.to(self.device)
-                    self.model_name = name  # Record which model actually loaded
-                    model_loaded = True
-                    logger.info(f"✅ Successfully loaded: {name}")
-                    break
-                except Exception as e:
-                    logger.warning(f"Failed to load {name}: {e}")
-                    continue
+        # Add [MASK] token for diffusion
+        # Resize embeddings to have one extra token for masking
+        self.tokenizer.add_special_tokens({'additional_special_tokens': ['[MASK]']})
+        self.model.resize_token_embeddings(len(self.tokenizer))
+        self._mask_token_id = self.tokenizer.convert_tokens_to_ids('[MASK]')
         
-        if not model_loaded:
-            raise RuntimeError(
-                f"Could not load any model. Tried: {self.model_name}, {self.base_model_name}"
-            )
+        # Initialize mask embedding to zero (neutral — won't bias predictions)
+        with torch.no_grad():
+            self.model.transformer.wte.weight[self._mask_token_id] = 0.0
         
-        # Load config from whichever model loaded
+        self.model = self.model.to(self.device)
         self.config = self.model.config
         self.model.eval()
+        
+        logger.info(f"✅ Model ready. Mask token ID: {self._mask_token_id}")
+    
+    def _load_diffugpt_weights(self):
+        """
+        Load DiffuGPT checkpoint and remap weight names to GPT-2 format.
+        
+        DiffuGPT mapping:
+          denoise_model.h.{i}.* → transformer.h.{i}.*
+          denoise_model.ln_f.*  → transformer.ln_f.*
+          denoise_model.wpe.*   → transformer.wpe.*
+          embed_tokens.weight   → transformer.wte.weight + lm_head.weight (tied)
+        """
+        from safetensors.torch import load_file as load_safetensors
+        from huggingface_hub import hf_hub_download
+        import os
+        
+        logger.info("Loading DiffuGPT weights with name remapping...")
+        
+        # Download the checkpoint
+        try:
+            ckpt_path = hf_hub_download(
+                self.model_name, "model.safetensors",
+                cache_dir=self.cache_dir,
+            )
+            raw_state = load_safetensors(ckpt_path)
+        except Exception:
+            ckpt_path = hf_hub_download(
+                self.model_name, "pytorch_model.bin",
+                cache_dir=self.cache_dir,
+            )
+            raw_state = torch.load(ckpt_path, map_location="cpu")
+        
+        # Build name mapping
+        mapped_state = {}
+        for key, value in raw_state.items():
+            new_key = key
+            
+            # denoise_model.* → transformer.*
+            if key.startswith("denoise_model."):
+                new_key = "transformer." + key[len("denoise_model."):]
+            
+            # embed_tokens.weight → transformer.wte.weight (and lm_head)
+            elif key == "embed_tokens.weight":
+                mapped_state["transformer.wte.weight"] = value
+                mapped_state["lm_head.weight"] = value.clone()
+                continue
+            
+            mapped_state[new_key] = value
+        
+        # Load into model
+        result = self.model.load_state_dict(mapped_state, strict=False)
+        
+        n_loaded = len(mapped_state) - len(result.unexpected_keys)
+        logger.info(
+            f"DiffuGPT weights loaded: {n_loaded} params mapped, "
+            f"{len(result.missing_keys)} missing, "
+            f"{len(result.unexpected_keys)} unexpected"
+        )
+        
+        if len(result.missing_keys) > 5:
+            logger.warning(f"Many missing keys — model may not work correctly")
     
     def _get_mask_token_id(self) -> int:
-        """
-        Get the mask token ID for diffusion masking.
-        
-        Strategy: Use the tokenizer's mask_token if available,
-        otherwise use eos_token_id as a sentinel for masked positions.
-        We clamp generated tokens to avoid this ID in output.
-        """
-        # Check for dedicated mask token
-        if hasattr(self.tokenizer, 'mask_token_id') and self.tokenizer.mask_token_id is not None:
-            return self.tokenizer.mask_token_id
-        
-        # Use eos_token_id as mask sentinel (safe — we filter it in decode)
-        if self.tokenizer.eos_token_id is not None:
-            return self.tokenizer.eos_token_id
-        
-        # Last resort: use last vocab token
-        return self.config.vocab_size - 1
+        """Get the mask token ID (set during model loading)."""
+        return self._mask_token_id
     
     def _get_layer_module(self, layer_idx: int):
         """Get the transformer layer module by index."""
