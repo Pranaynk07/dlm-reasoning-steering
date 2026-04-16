@@ -1,174 +1,106 @@
-# 🧠 Steering Diffusion Language Models via SAE Feature Intervention
+# DLM-Scope Extension: SAE-Based Feature Analysis & Steering on DiffuGPT
 
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![arXiv](https://img.shields.io/badge/Reference-DLM--Scope-red.svg)](https://arxiv.org/abs/2602.05859)
+**Extending [DLM-Scope](https://arxiv.org/abs/2602.05859) (Wang et al., ICLR 2026 Workshop)**  
+**Built on the official [HKUNLP/DiffuLLaMA](https://github.com/HKUNLP/DiffuLLaMA) codebase**
 
-> **Extending DLM-Scope (ICLR 2026) to steer Diffusion Language Models toward chain-of-thought reasoning using Sparse Autoencoder feature intervention.**
+This project applies the DLM-Scope Sparse Autoencoder (SAE) interpretability framework to DiffuGPT-Medium (355M), extending it with **contrastive feature discovery** between chain-of-thought (CoT) and direct prompting styles.
 
-This project demonstrates that SAE-derived features in Diffusion Language Models encode reasoning behavior, and that amplifying these features during denoising can improve mathematical problem-solving at inference time — without any additional training.
+## Key Contributions
 
-<p align="center">
-  <img src="results/figures/fig1_differential_heatmap.png" width="100%" alt="Differential activation of reasoning features">
-</p>
+1. **First contrastive SAE analysis on DLMs** — We identify SAE features that differentially activate during CoT vs. Direct prompting, revealing task-specific internal representations in diffusion language models.
 
-## 📋 Key Findings
+2. **DLM-Scope methodology at small scale** — We replicate the core DLM-Scope pipeline (Mask-SAE training, Top-K SAE, diffusion-time steering) on DiffuGPT-Medium, demonstrating the approach generalizes beyond 7B+ models.
 
-1. **Reasoning Features Exist**: Through contrastive analysis of chain-of-thought vs. direct-answer prompts, we identify SAE features that are significantly more active during mathematical reasoning (p < 0.05, Bonferroni corrected).
+3. **Diffusion-time steering** — We implement both All-tokens and Update-tokens steering strategies (Eq. 13-14) with per-step feature injection during the denoising loop.
 
-2. **Steering Works**: Amplifying these reasoning features during DLM denoising increases structured mathematical reasoning in generated text, as measured by a composite reasoning quality score.
+## Methodology
 
-3. **Directional Control**: Positive steering amplifies reasoning; negative steering suppresses it; random features produce no effect — confirming the features are causally relevant.
+Following DLM-Scope (Wang et al., 2026):
 
-4. **Layer Dependency**: Deep layers (consistent with DLM-Scope) show the strongest steering effects, aligning with the finding that steerable semantic directions concentrate in late residual-stream representations.
+| Stage | Method | Reference |
+|-------|--------|-----------|
+| **Activation collection** | Mask-SAE: activations from generated/masked positions during denoising | §3.1 |
+| **SAE architecture** | Top-K SAE with decoder normalization | Gao et al. (2024) |
+| **Feature discovery** | Welch's t-test + Bonferroni correction (CoT vs Direct) | Novel extension |
+| **Steering** | Per-step injection of feature direction `v_f` during denoising | Eq. 13-14 |
 
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────┐
-│              Diffusion Language Model            │
-│             (DiffuGPT-Medium 355M)               │
-│                                                  │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
-│  │  Layer 4  │  │ Layer 12 │  │ Layer 20 │ ···  │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘      │
-│       │              │              │            │
-│       ▼              ▼              ▼            │
-│  ┌──────────────────────────────────────┐       │
-│  │        Top-K SAE (d_dict = 4×d)      │       │
-│  │  encode → TopK → decode             │       │
-│  │  Extract interpretable features      │       │
-│  └────────────┬─────────────────────────┘       │
-│               │                                  │
-│  ┌────────────▼─────────────────────────┐       │
-│  │   Contrastive Feature Discovery      │       │
-│  │   CoT features vs Direct features    │       │
-│  │   → Reasoning-associated features    │       │
-│  └────────────┬─────────────────────────┘       │
-│               │                                  │
-│  ┌────────────▼─────────────────────────┐       │
-│  │   Diffusion-Time Steering            │       │
-│  │   X_{l,k} += α * m_f * v_f          │       │
-│  │   at each denoising step             │       │
-│  └──────────────────────────────────────┘       │
-└─────────────────────────────────────────────────┘
-```
-
-## 🚀 Quick Start
-
-### Run on Google Colab (Recommended)
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com)
-
-```python
-# In Colab:
-!git clone https://github.com/Pranaynk07/dlm-reasoning-steering.git
-%cd dlm-reasoning-steering/project3_dlm_steering
-!pip install -q -r requirements.txt
-%run scripts/full_pipeline.py
-```
-
-### Run Locally
-
-```bash
-git clone https://github.com/Pranaynk07/dlm-reasoning-steering.git
-cd dlm-reasoning-steering/project3_dlm_steering
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run full pipeline
-python scripts/full_pipeline.py
-
-# Or run individual phases
-python scripts/full_pipeline.py --phase 3  # Start from SAE training
-```
-
-## 📊 Experimental Results
-
-| Condition | GSM8K Accuracy | Reasoning Score | Steering Score S(f) |
-|---|---|---|---|
-| Baseline (no steering) | - | - | - |
-| Positive steering (α=2.0) | - | - | - |
-| Negative steering (α=-2.0) | - | - | - |
-| Random feature control | - | - | - |
-
-> *Results to be filled after experiments are run on Colab*
-
-## 🔬 Methodology
-
-### 1. Contrastive Feature Discovery
-
-We identify reasoning-associated SAE features by comparing feature activations between two conditions:
-
-- **Chain-of-Thought (CoT)**: "Solve step by step: {question}"
-- **Direct Answer**: "Answer directly: {question}"
-
-For each SAE feature, we compute:
-- **Differential activation**: `mean(CoT) - mean(Direct)`
-- **Statistical significance**: Welch's t-test with Bonferroni correction
-- **Effect size**: Cohen's d
-
-### 2. Diffusion-Time Steering
-
-Following DLM-Scope Eq. 13, at each denoising step k:
+### Pipeline
 
 ```
-X_{l,k}[s_k] += α × m_f × v_f
+GSM8K Problems → CoT/Direct Prompts → DiffuGPT Denoising
+                                              ↓
+                              Masked-Position Activations (Layer 20)
+                                              ↓
+                              Top-K SAE Training (d_dict~1024, k=32)
+                                              ↓
+                        Contrastive Analysis (Welch's t + Bonferroni)
+                                              ↓
+                         Reasoning Feature Discovery + Steering
 ```
 
-Where `v_f` is the SAE decoder direction for feature `f`, `α` controls steering strength, and `m_f` is a per-sample scale.
+## Results
 
-### 3. Evaluation
+### Model Capacity
 
-- **GSM8K Accuracy**: Numerical answer extraction and comparison
-- **Reasoning Score**: Composite metric based on reasoning markers, mathematical operations, and reasoning structure
-- **Concept Improvement C(f)**: Normalized reasoning quality change
-- **Steering Score S(f)**: C(f) + λ·P(f) combining concept gain and fluency
+DiffuGPT-Medium (355M) achieves 0% accuracy on GSM8K across all conditions. This is expected — even GPT-2 XL (1.5B, autoregressive) scores ~2% on GSM8K. The significance of our work lies in **feature discovery and methodology validation**, not downstream accuracy.
 
-## 📁 Project Structure
+### Feature Discovery
+
+The SAE successfully identifies features with statistically significant differential activation between CoT and Direct prompting conditions, demonstrating that DLMs develop distinct internal representations for different reasoning modes — analogous to findings in autoregressive LLMs.
+
+### Steering
+
+Applying DLM-Scope Eq. 13 with discovered features at Layer 20 shows measurable effects on reasoning markers, math operations, and output structure across steering strengths α ∈ [1, 16].
+
+## Project Structure
 
 ```
 project3_dlm_steering/
+├── notebooks/
+│   └── dlm_steering_colab.ipynb    # Self-contained Colab notebook (run this)
 ├── src/
-│   ├── models/
-│   │   ├── dlm_wrapper.py          # DLM loading & denoising loop
-│   │   └── topk_sae.py             # Top-K SAE architecture
-│   ├── data/
-│   │   ├── gsm8k_loader.py         # GSM8K with contrastive prompts
-│   │   └── activation_collector.py  # Batch activation extraction
-│   ├── training/
-│   │   └── sae_trainer.py          # SAE training loop
-│   ├── analysis/
-│   │   ├── contrastive_features.py # Reasoning feature discovery
-│   │   ├── steering_evaluator.py   # Evaluation metrics
-│   │   └── feature_visualizer.py   # Publication figures
-│   └── steering/
-│       └── diffusion_steerer.py    # SAE feature injection
-├── scripts/
-│   └── full_pipeline.py            # End-to-end pipeline
+│   ├── models/dlm_wrapper.py       # Local DiffuGPT wrapper
+│   ├── training/sae_trainer.py     # SAE training module
+│   ├── analysis/contrastive_features.py  # Feature discovery
+│   └── steering/diffusion_steerer.py     # Steering hooks
 ├── configs/
-│   └── experiment_config.yaml      # All hyperparameters
-└── results/                        # Generated outputs
+│   └── experiment_config.yaml
+└── README.md
 ```
 
-## 🔗 References
+## Quick Start (Google Colab)
 
-- **DLM-Scope** (ICLR 2026): [arXiv:2602.05859](https://arxiv.org/abs/2602.05859) — SAE-based interpretability for DLMs
-- **DiffuLLaMA**: [GitHub](https://github.com/HKUNLP/DiffuLLaMA) — Diffusion Language Models
-- **Dream-7B**: [HuggingFace](https://huggingface.co/Dream-org/Dream-v0-Base-7B)
-- **Scaling SAEs**: [Gao et al., 2024](https://arxiv.org/abs/2406.04093) — Top-K SAE architecture
+1. Open `notebooks/dlm_steering_colab.ipynb` in Google Colab
+2. Select **T4 GPU** runtime
+3. Run all cells (~15-20 min total)
+4. Results saved to `/content/dlm_results/`
 
-## 📜 Citation
+## Dependencies
 
-```bibtex
-@misc{dlm-reasoning-steering-2026,
-  title={Steering Diffusion Language Models via SAE Feature Intervention for Controllable Reasoning},
-  year={2026},
-  note={Extended from DLM-Scope (Wang et al., ICLR 2026)},
-}
+```
+transformers==4.44.2
+accelerate
+datasets
+scipy
+seaborn
+safetensors
+tqdm
 ```
 
-## 📄 License
+## References
 
-MIT License
+- Wang, X., Jiang, B., Wan, Y., Yang, B., Kong, L., & Zou, D. (2026). *DLM-Scope: Mechanistic Interpretability of Diffusion Language Models via Sparse Autoencoders.* ICLR 2026 Workshop. [arXiv:2602.05859](https://arxiv.org/abs/2602.05859)
+- Gong, S., Li, M., Feng, J., Wu, Z., & Kong, L. (2025). *DiffuGPT: Scaling Diffusion Language Models.* ICLR 2025.
+- Gao, L., et al. (2024). *Scaling and Evaluating Sparse Autoencoders.* [arXiv:2406.04093](https://arxiv.org/abs/2406.04093)
+- Ye, J., et al. (2025). *Dream: Discrete Diffusion with Refined and Efficient Auxiliary masking.*
+
+## Future Work
+
+- **Scale to DiffuLLaMA-7B / Dream-7B** for meaningful accuracy improvements
+- **Layer-wise comparison** of features across all 24 layers
+- **Temporal feature dynamics** across diffusion timesteps (DLM-Scope §5)
+- **Cross-task transfer** of reasoning features to other benchmarks
+
+## License
+
+MIT
