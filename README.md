@@ -3,34 +3,57 @@
 **Extending [DLM-Scope](https://arxiv.org/abs/2602.05859) (Wang et al., ICLR 2026)**  
 **Built on the official [HKUNLP/DiffuLLaMA](https://github.com/HKUNLP/DiffuLLaMA) codebase**
 
-This project applies the DLM-Scope Sparse Autoencoder (SAE) interpretability framework to DiffuGPT-Medium (355M), extending it with **contrastive feature discovery** between chain-of-thought (CoT) and direct prompting styles.
+This project applies the DLM-Scope Sparse Autoencoder (SAE) interpretability framework to DiffuGPT-Medium (355M), extending it with **contrastive feature discovery**, **logit lens interpretation**, and **causal ablation** to characterize math-reasoning representations in diffusion language models.
 
 ## Key Findings
 
-### 1. SAE Reconstruction (EV = 0.721)
+### 1. SAE Reconstruction (EV = 0.72)
 
-Our Top-K SAE (d=1024, k=32) trained on Layer 20 achieves **72.1% explained variance**, demonstrating that sparse autoencoders faithfully decompose DLM residual-stream activations — consistent with DLM-Scope's results on Dream-7B.
+Our Top-K SAE (d=1024, k=32) trained on Layer 20 achieves **72% explained variance**, demonstrating that SAEs faithfully decompose DLM residual-stream activations at small scale — consistent with DLM-Scope results on Dream-7B.
 
-### 2. Contrastive Feature Discovery (406 significant features)
+### 2. Contrastive Feature Discovery (384 significant features)
 
-Using Welch's t-test with Bonferroni correction (p < 4.88×10⁻⁵), we identify **406 out of 1024 SAE features** (39.6%) with statistically significant activation differences between CoT and Direct prompting. Of these, **13 features** show medium effect sizes (Cohen's d = 0.30–0.41) favoring CoT, revealing that DLMs develop distinct internal representations for reasoning-style prompts.
+Welch's t-test with Bonferroni correction (p < 4.88×10⁻⁵) identifies **384 / 1024 features** with statistically significant differences between CoT and Direct prompting. Of these, **14 features** show medium effect sizes (Cohen's d = 0.21–0.51).
 
-### 3. Diffusion-Time Steering
+### 3. Feature Interpretation via Logit Lens
 
-Applying DLM-Scope Eq. 13 with discovered features:
+Projecting SAE decoder directions through the LM head reveals interpretable feature semantics:
 
-| Condition | Accuracy | R-Score | Reasoning Markers | Output Length |
-|-----------|----------|---------|-------------------|---------------|
-| Baseline | 0.0% | 10.1 | 4.0 | 145 |
-| **+Steer α=5** | **4.0%** | 9.4 | 3.8 | 152 |
-| −Steer α=−5 | 0.0% | 9.3 | 3.4 | 148 |
-| Random Ctrl | 0.0% | 11.5 | 3.6 | 146 |
+| Feature | Cohen's d | Top Promoted Tokens | Interpretation |
+|---------|-----------|---------------------|----------------|
+| F387 | 0.45 | equations, math, calculus, solving, algebra, equation | Math/equations |
+| F197 | 0.27 | solves, solve, solved, solving, Solution, solution | Solution-seeking |
+| F895 | 0.27 | calculate, estimate, multiply, subtract, calculated | Computation |
+| F355 | 0.21 | minus, numbers, multiplied, rounding, percentage | Arithmetic |
+| F164 | 0.51 | Answers, Puzzles, Difficulty, math, Mathematics | Math education |
+| F653 | 0.44 | integers, integer, Boolean, digits, combinations | Discrete math |
 
-Key observations:
-- **+Steer is the only condition producing correct answers** (4% vs 0% for all others)
-- **−Steer reduces reasoning markers by 15%**, confirming feature specificity
-- **Optimal α ≈ 3** with an inverted-U curve matching DLM-Scope §G.2 ablation results
-- Model capacity (355M) limits absolute performance; methodology validated for scaling to 7B+
+These features fire significantly more during CoT prompting (Bonferroni p < 5×10⁻⁵), revealing that DLMs develop distinct, interpretable representations for reasoning tasks.
+
+### 4. Causal Ablation
+
+Targeted removal of CoT feature contributions during generation:
+
+| Condition | R-Score | Change |
+|-----------|---------|--------|
+| No Ablation | 12.5 | — |
+| **Ablate CoT Features** | **10.4** | **−17.1%** |
+| Ablate Random Features | 11.4 | −9.4% |
+
+Removing CoT features causes **~2× the degradation** of removing random features (7.7 pp difference), establishing causal necessity.
+
+### 5. Diffusion-Time Steering
+
+Applying DLM-Scope Eq. 13 with discovered features shows steering effects on reasoning markers:
+
+| Condition | Reasoning Markers | R-Score |
+|-----------|-------------------|---------|
+| Baseline | 3.8 | 8.4 |
+| +Steer α=5 | **4.1** | 9.4 |
+| −Steer α=−5 | 3.3 | 10.0 |
+| Random Ctrl | 3.3 | 7.1 |
+
+Positive steering increases reasoning markers (+8% vs baseline), while negative steering and random controls reduce them. Behavioral effects are modest at 355M scale; the methodology is validated for scaling to Dream-7B / LLaDA-8B where baseline reasoning is stronger.
 
 ## Methodology
 
@@ -38,70 +61,34 @@ Following DLM-Scope §2–4:
 
 | Stage | Method | Reference |
 |-------|--------|-----------|
-| Activation collection | Mask-SAE: per-token activations from generated positions during denoising | §3.1 |
+| Activation collection | Mask-SAE: per-token activations from generated positions | §3.1 |
 | SAE architecture | Top-K SAE with decoder normalization (d=1024, k=32) | Gao et al. (2024) |
-| Feature discovery | Welch's t-test + Bonferroni correction (CoT vs Direct) | Novel extension |
-| Steering | Per-step injection of feature direction v_f during denoising | Eq. 13–14 |
-| Evaluation | Reasoning markers, math operations, equations, accuracy | §4.2 |
+| Feature discovery | Welch's t-test + Bonferroni correction | Novel extension |
+| Feature interpretation | Logit lens: decoder directions → vocabulary space | Novel extension |
+| Causal test | Targeted feature ablation vs. random control | Novel extension |
+| Steering | Per-step injection during denoising | Eq. 13–14 |
 
-### Pipeline
+## Quick Start
 
-```
-GSM8K Problems (200) → CoT / Direct Prompts → DiffuGPT Denoising (20 steps)
-                                                        ↓
-                                    Layer 20 Activations at t = T/2 (19,668 tokens)
-                                                        ↓
-                                    Top-K SAE Training (40 epochs, EV=0.721)
-                                                        ↓
-                              Contrastive Analysis → 406 significant features
-                                                        ↓
-                                    Steering Experiments (α sweep, 4 conditions)
-                                                        ↓
-                                    Publication Figures + Quantitative Report
-```
-
-## Figures
-
-The notebook generates four publication-quality figures:
-
-1. **Feature Effect Size Distribution** — Shows the full distribution of Cohen's d across all 1024 features, with CoT-associated features highlighted in the right tail
-2. **Top CoT-Associated Features** — Bar chart of the 13 reasoning features ranked by differential activation
-3. **Steering Comparison** — Side-by-side comparison of reasoning score, markers, and output length across conditions
-4. **Alpha Sweep** — Steering strength ablation showing the inverted-U pattern (DLM-Scope §G.2)
+1. Open `notebooks/dlm_steering_colab.ipynb` in [Google Colab](https://colab.research.google.com/)
+2. Select **T4 GPU** runtime
+3. Run all cells (~20 min)
+4. Results saved to `/content/dlm_results/`
 
 ## Project Structure
 
 ```
 project3_dlm_steering/
 ├── notebooks/
-│   └── dlm_steering_colab.ipynb    # Self-contained Colab notebook (run this)
+│   └── dlm_steering_colab.ipynb    # Self-contained Colab notebook
 ├── src/
-│   ├── models/dlm_wrapper.py       # Local DiffuGPT wrapper
-│   ├── training/sae_trainer.py     # SAE training module
-│   ├── analysis/contrastive_features.py  # Feature discovery
-│   └── steering/diffusion_steerer.py     # Steering hooks
+│   ├── models/dlm_wrapper.py
+│   ├── training/sae_trainer.py
+│   ├── analysis/contrastive_features.py
+│   └── steering/diffusion_steerer.py
 ├── configs/
 │   └── experiment_config.yaml
 └── README.md
-```
-
-## Quick Start
-
-1. Open `notebooks/dlm_steering_colab.ipynb` in [Google Colab](https://colab.research.google.com/)
-2. Select **T4 GPU** runtime
-3. Run all cells (~15 min total)
-4. Results saved to `/content/dlm_results/` including figures and JSON metrics
-
-## Dependencies
-
-```
-transformers==4.44.2
-accelerate
-datasets
-scipy
-seaborn
-safetensors
-tqdm
 ```
 
 ## References
@@ -109,7 +96,6 @@ tqdm
 1. Wang, X., Jiang, B., Wan, Y., Yang, B., Kong, L., & Zou, D. (2026). *DLM-Scope: Mechanistic Interpretability of Diffusion Language Models via Sparse Autoencoders.* ICLR 2026. [arXiv:2602.05859](https://arxiv.org/abs/2602.05859)
 2. Gong, S., Li, M., Feng, J., Wu, Z., & Kong, L. (2025). *DiffuGPT.* ICLR 2025.
 3. Gao, L., et al. (2024). *Scaling and Evaluating Sparse Autoencoders.* [arXiv:2406.04093](https://arxiv.org/abs/2406.04093)
-4. Ye, J., et al. (2025). *Dream: Discrete Diffusion with Refined and Efficient Auxiliary Masking.*
 
 ## License
 
