@@ -1,0 +1,93 @@
+{
+  "sae": {
+    "d_dict": 1024,
+    "k": 32,
+    "layer": 20,
+    "ev": 0.721
+  },
+  "contrastive": {
+    "n_significant": 384,
+    "n_reasoning": 14,
+    "top_features": [
+      164,
+      387,
+      653,
+      412,
+      77,
+      901,
+      197,
+      895,
+      244,
+      518,
+      630,
+      489,
+      355,
+      741
+    ]
+  },
+  "ablation": {
+    "baseline_rscore": 12.5,
+    "cot_ablation_rscore": 10.4,
+    "random_ablation_rscore": 11.4,
+    "cot_drop_pct": -17.1,
+    "random_drop_pct": -9.4
+  },
+  "steering": {
+    "Baseline": {
+      "score": 8.4,
+      "markers": 3.8,
+      "words": 45,
+      "acc": 0.04
+    },
+    "+Steer \u03b1=5": {
+      "score": 9.4,
+      "markers": 4.1,
+      "words": 52,
+      "acc": 0.04
+    },
+    "-Steer \u03b1=-5": {
+      "score": 10.0,
+      "markers": 3.3,
+      "words": 61,
+      "acc": 0.04
+    },
+    "Random Ctrl": {
+      "score": 7.1,
+      "markers": 3.3,
+      "words": 43,
+      "acc": 0.04
+    }
+  },
+  "alpha_sweep": [
+    {
+      "alpha": 1,
+      "score": 8.6,
+      "markers": 3.9
+    },
+    {
+      "alpha": 3,
+      "score": 9.0,
+      "markers": 4.0
+    },
+    {
+      "alpha": 5,
+      "score": 9.4,
+      "markers": 4.1
+    },
+    {
+      "alpha": 8,
+      "score": 9.1,
+      "markers": 3.9
+    },
+    {
+      "alpha": 12,
+      "score": 8.3,
+      "markers": 3.5
+    },
+    {
+      "alpha": 16,
+      "score": 7.6,
+      "markers": 3.1
+    }
+  ]
+}
